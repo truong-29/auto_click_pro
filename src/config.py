@@ -6,7 +6,7 @@ import sys
 
 # ============== THÔNG TIN ỨNG DỤNG ==============
 APP_VERSION = "1.0.0"  # Cập nhật khi release mới
-GITHUB_REPO = "your-username/autoclick-pro"  # Thay bằng repo của bạn
+GITHUB_REPO = "https://github.com/truong-29/auto_click_pro"  # Thay bằng repo của bạn
 
 # Thư mục gốc - lấy từ vị trí main.py
 if getattr(sys, 'frozen', False):
