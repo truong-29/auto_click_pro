@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-Update Service - Kiểm tra và cập nhật ứng dụng từ GitHub
-Non-blocking: chạy trên background thread, không treo UI
-"""
+"""Service xử lý auto-update từ GitHub"""
 
 import os
 import sys
@@ -10,262 +7,168 @@ import json
 import tempfile
 import subprocess
 import threading
-import urllib.request
-import urllib.error
-from typing import Optional, Callable
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
-from ..config import APP_VERSION, GITHUB_REPO, APP_DIR
-
-
-class UpdateInfo:
-    """Thông tin về bản cập nhật"""
-    def __init__(self, version: str, download_url: str, release_notes: str, published_at: str):
-        self.version = version
-        self.download_url = download_url
-        self.release_notes = release_notes
-        self.published_at = published_at
+from src.config import VERSION, GITHUB_REPO, APP_DIR
 
 
 class UpdateService:
-    """
-    Service kiểm tra và tải cập nhật từ GitHub Releases.
-    Tất cả operations chạy trên background thread → không block UI.
-    """
+    """Service kiểm tra và cập nhật phiên bản mới từ GitHub"""
     
-    GITHUB_API = "https://api.github.com/repos/{}/releases/latest"
+    GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     
     def __init__(self):
-        self._checking = False
-        self._downloading = False
-        self._cancel_download = False
+        self.latest_version = None
+        self.download_url = None
+        self.release_notes = None
+        self.download_progress = 0
+        self.is_downloading = False
     
-    def check_for_updates(
-        self,
-        on_update_available: Optional[Callable[[UpdateInfo], None]] = None,
-        on_no_update: Optional[Callable[[], None]] = None,
-        on_error: Optional[Callable[[str], None]] = None
-    ):
+    def check_for_update(self) -> dict:
         """
-        Kiểm tra cập nhật (chạy background thread).
-        
-        Args:
-            on_update_available: Callback khi có bản mới (nhận UpdateInfo)
-            on_no_update: Callback khi đã là bản mới nhất
-            on_error: Callback khi có lỗi (nhận error message)
+        Kiểm tra phiên bản mới trên GitHub.
+        Returns: dict với keys: has_update, latest_version, release_notes, error
         """
-        if self._checking:
-            return
-        
-        def _check():
-            self._checking = True
-            try:
-                update_info = self._fetch_latest_release()
-                
-                if update_info and self._is_newer_version(update_info.version):
-                    if on_update_available:
-                        on_update_available(update_info)
-                else:
-                    if on_no_update:
-                        on_no_update()
-                        
-            except Exception as e:
-                if on_error:
-                    on_error(str(e))
-            finally:
-                self._checking = False
-        
-        thread = threading.Thread(target=_check, daemon=True)
-        thread.start()
-    
-    def download_and_install(
-        self,
-        update_info: UpdateInfo,
-        on_progress: Optional[Callable[[int], None]] = None,
-        on_complete: Optional[Callable[[str], None]] = None,
-        on_error: Optional[Callable[[str], None]] = None
-    ):
-        """
-        Tải và cài đặt bản cập nhật (chạy background thread).
-        
-        Args:
-            update_info: Thông tin bản cập nhật
-            on_progress: Callback tiến trình (0-100%)
-            on_complete: Callback khi hoàn tất (nhận đường dẫn file)
-            on_error: Callback khi có lỗi
-        """
-        if self._downloading:
-            return
-        
-        def _download():
-            self._downloading = True
-            self._cancel_download = False
+        try:
+            req = Request(self.GITHUB_API, headers={"User-Agent": "AutoClickPro"})
+            with urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
             
-            try:
-                # Tải file về temp
-                temp_path = self._download_file(
-                    update_info.download_url,
-                    on_progress
-                )
-                
-                if self._cancel_download:
-                    # Xóa file nếu bị hủy
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                    return
-                
-                # Tạo và chạy updater script
-                self._create_and_run_updater(temp_path)
-                
-                if on_complete:
-                    on_complete(temp_path)
-                    
-            except Exception as e:
-                if on_error:
-                    on_error(str(e))
-            finally:
-                self._downloading = False
-        
-        thread = threading.Thread(target=_download, daemon=True)
-        thread.start()
-    
-    def cancel_download(self):
-        """Hủy quá trình tải"""
-        self._cancel_download = True
-    
-    def _fetch_latest_release(self) -> Optional[UpdateInfo]:
-        """Lấy thông tin release mới nhất từ GitHub API"""
-        url = self.GITHUB_API.format(GITHUB_REPO)
-        
-        request = urllib.request.Request(
-            url,
-            headers={
-                'User-Agent': 'AutoClickPro-Updater',
-                'Accept': 'application/vnd.github.v3+json'
+            self.latest_version = data.get("tag_name", "").lstrip("v")
+            self.release_notes = data.get("body", "Không có ghi chú")
+            
+            # Tìm file exe trong assets
+            for asset in data.get("assets", []):
+                if asset["name"].endswith(".exe"):
+                    self.download_url = asset["browser_download_url"]
+                    break
+            
+            has_update = self._compare_versions(VERSION, self.latest_version)
+            
+            return {
+                "has_update": has_update,
+                "latest_version": self.latest_version,
+                "current_version": VERSION,
+                "release_notes": self.release_notes,
+                "error": None
             }
-        )
+        except (URLError, HTTPError) as e:
+            return {"has_update": False, "error": f"Lỗi kết nối: {e}"}
+        except Exception as e:
+            return {"has_update": False, "error": f"Lỗi: {e}"}
+    
+    def _compare_versions(self, current: str, latest: str) -> bool:
+        """So sánh 2 phiên bản, trả về True nếu latest > current"""
+        try:
+            current_parts = [int(x) for x in current.split(".")]
+            latest_parts = [int(x) for x in latest.split(".")]
+            return latest_parts > current_parts
+        except:
+            return False
+    
+    def download_update(self, progress_callback=None) -> dict:
+        """
+        Tải file exe mới về thư mục temp.
+        Args:
+            progress_callback: Hàm callback(percent) để cập nhật progress
+        Returns: dict với keys: success, file_path, error
+        """
+        if not self.download_url:
+            return {"success": False, "error": "Không tìm thấy link tải"}
+        
+        self.is_downloading = True
+        temp_path = os.path.join(tempfile.gettempdir(), "AutoClickPro_update.exe")
         
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                data = json.loads(response.read().decode('utf-8'))
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                raise Exception("Không tìm thấy repository hoặc chưa có release nào.")
-            raise Exception(f"Lỗi GitHub API: {e.code}")
-        except urllib.error.URLError as e:
-            raise Exception(f"Không thể kết nối đến GitHub: {e.reason}")
+            req = Request(self.download_url, headers={"User-Agent": "AutoClickPro"})
+            with urlopen(req, timeout=60) as response:
+                total_size = int(response.headers.get("Content-Length", 0))
+                downloaded = 0
+                
+                with open(temp_path, "wb") as f:
+                    while True:
+                        chunk = response.read(8192)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        if total_size > 0 and progress_callback:
+                            percent = int(downloaded * 100 / total_size)
+                            self.download_progress = percent
+                            progress_callback(percent)
+            
+            self.is_downloading = False
+            return {"success": True, "file_path": temp_path, "error": None}
         
-        # Tìm file .exe trong assets
-        download_url = None
-        for asset in data.get('assets', []):
-            if asset['name'].endswith('.exe'):
-                download_url = asset['browser_download_url']
-                break
-        
-        if not download_url:
-            raise Exception("Không tìm thấy file .exe trong release.")
-        
-        return UpdateInfo(
-            version=data['tag_name'].lstrip('v'),
-            download_url=download_url,
-            release_notes=data.get('body', ''),
-            published_at=data.get('published_at', '')
-        )
+        except Exception as e:
+            self.is_downloading = False
+            return {"success": False, "error": f"Lỗi tải: {e}"}
     
-    def _is_newer_version(self, remote_version: str) -> bool:
-        """So sánh version: True nếu remote mới hơn local"""
+    def install_update(self, new_exe_path: str) -> dict:
+        """
+        Cài đặt bản cập nhật bằng cách tạo batch script.
+        Args:
+            new_exe_path: Đường dẫn file exe mới đã tải
+        Returns: dict với keys: success, error
+        """
         try:
-            local_parts = [int(x) for x in APP_VERSION.split('.')]
-            remote_parts = [int(x) for x in remote_version.split('.')]
+            if getattr(sys, 'frozen', False):
+                current_exe = sys.executable
+            else:
+                # Đang chạy từ script, không thể tự update
+                return {"success": False, "error": "Chỉ hỗ trợ update khi chạy từ file exe"}
             
-            # Pad với 0 nếu độ dài khác nhau
-            max_len = max(len(local_parts), len(remote_parts))
-            local_parts.extend([0] * (max_len - len(local_parts)))
-            remote_parts.extend([0] * (max_len - len(remote_parts)))
-            
-            return remote_parts > local_parts
-        except ValueError:
-            # Nếu không parse được, so sánh string
-            return remote_version != APP_VERSION
-    
-    def _download_file(
-        self,
-        url: str,
-        on_progress: Optional[Callable[[int], None]] = None
-    ) -> str:
-        """Tải file về thư mục temp, trả về đường dẫn"""
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, "AutoClickPro_update.exe")
-        
-        request = urllib.request.Request(
-            url,
-            headers={'User-Agent': 'AutoClickPro-Updater'}
-        )
-        
-        with urllib.request.urlopen(request, timeout=60) as response:
-            total_size = int(response.headers.get('Content-Length', 0))
-            downloaded = 0
-            chunk_size = 8192
-            
-            with open(temp_path, 'wb') as f:
-                while True:
-                    if self._cancel_download:
-                        break
-                    
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
-                    
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    
-                    if on_progress and total_size > 0:
-                        progress = int(downloaded * 100 / total_size)
-                        on_progress(progress)
-        
-        return temp_path
-    
-    def _create_and_run_updater(self, new_exe_path: str):
-        """Tạo batch script để thay thế exe và restart app"""
-        if getattr(sys, 'frozen', False):
-            current_exe = sys.executable
-        else:
-            # Khi chạy từ script, không thể tự update
-            raise Exception("Auto-update chỉ hoạt động với bản build (.exe)")
-        
-        temp_dir = tempfile.gettempdir()
-        batch_path = os.path.join(temp_dir, "autoclick_updater.bat")
-        
-        # Batch script: đợi app đóng → copy file mới → chạy lại app
-        batch_content = f'''@echo off
+            # Tạo batch script để thay thế exe
+            batch_path = os.path.join(tempfile.gettempdir(), "update_autoclick.bat")
+            batch_content = f'''@echo off
 chcp 65001 >nul
 echo Đang cập nhật AutoClick Pro...
 echo Vui lòng đợi...
 
-:: Đợi app cũ đóng hoàn toàn
+:: Chờ app đóng hoàn toàn
 timeout /t 2 /nobreak >nul
 
-:: Copy file mới đè lên file cũ
+:: Thử xóa file cũ (retry nếu còn đang chạy)
+:retry
+del /f /q "{current_exe}" 2>nul
+if exist "{current_exe}" (
+    timeout /t 1 /nobreak >nul
+    goto retry
+)
+
+:: Copy file mới
 copy /y "{new_exe_path}" "{current_exe}"
 
-:: Xóa file tạm
-del /f "{new_exe_path}"
-
-:: Chạy lại app
+:: Khởi động lại app
 start "" "{current_exe}"
 
-:: Tự xóa batch file
-del /f "%~f0"
+:: Xóa file tạm
+del /f /q "{new_exe_path}" 2>nul
+del /f /q "%~f0" 2>nul
 '''
+            
+            with open(batch_path, "w", encoding="utf-8") as f:
+                f.write(batch_content)
+            
+            # Chạy batch script và thoát app
+            subprocess.Popen(
+                ["cmd", "/c", batch_path],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                cwd=tempfile.gettempdir()
+            )
+            
+            return {"success": True, "error": None}
         
-        with open(batch_path, 'w', encoding='utf-8') as f:
-            f.write(batch_content)
+        except Exception as e:
+            return {"success": False, "error": f"Lỗi cài đặt: {e}"}
+    
+    def check_update_async(self, callback):
+        """Kiểm tra update trong background thread"""
+        def _check():
+            result = self.check_for_update()
+            callback(result)
         
-        # Chạy batch script (detached)
-        subprocess.Popen(
-            ['cmd', '/c', batch_path],
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-            close_fds=True
-        )
-        
-        # Thoát app hiện tại
-        sys.exit(0)
+        thread = threading.Thread(target=_check, daemon=True)
+        thread.start()

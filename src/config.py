@@ -4,26 +4,103 @@
 import os
 import sys
 
-# ============== THÔNG TIN ỨNG DỤNG ==============
-APP_VERSION = "1.0.0"  # Cập nhật khi release mới
-GITHUB_REPO = "https://github.com/truong-29/auto_click_pro"  # Thay bằng repo của bạn
+# Thông tin phiên bản và GitHub
+VERSION = "1.0.1"
+GITHUB_REPO = "truong-29/auto_click_pro"
+CHECK_UPDATE_ON_START = True
 
-# Thư mục gốc - lấy từ vị trí main.py
-if getattr(sys, 'frozen', False):
-    # Nếu chạy từ exe
-    APP_DIR = os.path.dirname(sys.executable)
-else:
-    # Nếu chạy từ script
-    APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Thư mục dữ liệu
-DATA_DIR = os.path.join(APP_DIR, "data")
-SCRIPTS_DIR = os.path.join(DATA_DIR, "scripts")
-IMAGES_DIR = os.path.join(DATA_DIR, "images")
+def get_app_dir():
+    """Lấy thư mục chứa exe hoặc script"""
+    if getattr(sys, 'frozen', False):
+        # Chạy từ exe - lấy thư mục chứa file exe
+        return os.path.dirname(sys.executable)
+    else:
+        # Chạy từ script - lấy thư mục gốc project
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Tạo thư mục nếu chưa tồn tại
-for folder in [DATA_DIR, SCRIPTS_DIR, IMAGES_DIR]:
+
+def get_bundle_dir():
+    """Lấy thư mục chứa resources được đóng gói (cho onefile mode)"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller onefile mode: extract vào _MEIPASS
+        # PyInstaller onedir mode: cùng thư mục với exe
+        return getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    else:
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# Thư mục gốc của ứng dụng (chứa exe)
+APP_DIR = get_app_dir()
+
+# Thư mục chứa bundled resources (có thể là temp folder với onefile)
+BUNDLE_DIR = get_bundle_dir()
+
+# Thư mục dữ liệu người dùng (cạnh exe, để lưu scripts/images mới)
+USER_DATA_DIR = os.path.join(APP_DIR, "data")
+USER_SCRIPTS_DIR = os.path.join(USER_DATA_DIR, "scripts")
+USER_IMAGES_DIR = os.path.join(USER_DATA_DIR, "images")
+
+# Thư mục dữ liệu đóng gói (read-only, trong bundle)
+BUNDLE_DATA_DIR = os.path.join(BUNDLE_DIR, "data")
+BUNDLE_SCRIPTS_DIR = os.path.join(BUNDLE_DATA_DIR, "scripts")
+BUNDLE_IMAGES_DIR = os.path.join(BUNDLE_DATA_DIR, "images")
+
+# Alias cho tương thích ngược
+DATA_DIR = USER_DATA_DIR
+SCRIPTS_DIR = USER_SCRIPTS_DIR
+IMAGES_DIR = USER_IMAGES_DIR
+
+# Tạo thư mục user data nếu chưa tồn tại
+for folder in [USER_DATA_DIR, USER_SCRIPTS_DIR, USER_IMAGES_DIR]:
     os.makedirs(folder, exist_ok=True)
+
+
+def get_resource_path(relative_path):
+    """
+    Lấy đường dẫn tuyệt đối đến resource.
+    Ưu tiên user data, fallback về bundled data.
+    """
+    # Thử tìm trong user data trước
+    user_path = os.path.join(USER_DATA_DIR, relative_path)
+    if os.path.exists(user_path):
+        return user_path
+    
+    # Fallback về bundled data
+    bundle_path = os.path.join(BUNDLE_DATA_DIR, relative_path)
+    if os.path.exists(bundle_path):
+        return bundle_path
+    
+    # Trả về user path để tạo mới
+    return user_path
+
+
+def copy_bundled_data_if_needed():
+    """
+    Copy dữ liệu mẫu từ bundle sang user data nếu chưa có.
+    Chỉ chạy lần đầu khi user data trống.
+    """
+    import shutil
+    
+    # Copy scripts mẫu
+    if os.path.exists(BUNDLE_SCRIPTS_DIR):
+        for filename in os.listdir(BUNDLE_SCRIPTS_DIR):
+            src = os.path.join(BUNDLE_SCRIPTS_DIR, filename)
+            dst = os.path.join(USER_SCRIPTS_DIR, filename)
+            if not os.path.exists(dst) and os.path.isfile(src):
+                shutil.copy2(src, dst)
+    
+    # Copy images mẫu
+    if os.path.exists(BUNDLE_IMAGES_DIR):
+        for filename in os.listdir(BUNDLE_IMAGES_DIR):
+            src = os.path.join(BUNDLE_IMAGES_DIR, filename)
+            dst = os.path.join(USER_IMAGES_DIR, filename)
+            if not os.path.exists(dst) and os.path.isfile(src):
+                shutil.copy2(src, dst)
+
+
+# Copy dữ liệu mẫu khi khởi động
+copy_bundled_data_if_needed()
 
 # Cấu hình cửa sổ
 WINDOW_TITLE = "🖱️ AutoClick Pro - Công cụ tự động click"

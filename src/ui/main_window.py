@@ -12,9 +12,8 @@ from ..config import (
     DEFAULT_LOOP_COUNT, DEFAULT_LOOP_DELAY
 )
 from ..models import Action, Step, Script
-from ..services import MouseService, ImageService, ScriptService, UpdateService
+from ..services import MouseService, ImageService, ScriptService
 from ..core import AutomationEngine
-from ..config import APP_VERSION
 from .theme import COLORS, FONTS, DIMENSIONS
 from .components import (
     ModernFrame, ModernLabelFrame, ModernLabel, ModernEntry,
@@ -22,7 +21,7 @@ from .components import (
     ModernListbox, ModernScrollbar, StatusBar, SectionHeader,
     IconButton, Separator
 )
-from .dialogs import DialogManager, RegionCaptureDialog, WindowSelectorDialog, UpdateDialog
+from .dialogs import DialogManager, RegionCaptureDialog, WindowSelectorDialog
 
 
 class MainWindow:
@@ -40,10 +39,6 @@ class MainWindow:
         self.image_service = ImageService()
         self.script_service = ScriptService()
         self.automation = AutomationEngine()
-        self.update_service = UpdateService()
-        
-        # Update dialog reference
-        self._update_dialog = None
         
         # Data
         self.steps: list[Step] = []
@@ -56,7 +51,6 @@ class MainWindow:
         self._setup_hotkeys()
         self._setup_callbacks()
         self._update_mouse_position()
-        self._check_for_updates()  # Kiểm tra cập nhật khi khởi động
     
     def _setup_style(self):
         """Thiết lập style cho ttk widgets"""
@@ -1251,70 +1245,28 @@ class MainWindow:
         )
         self._update_status("Đã chuyển về chế độ toàn cục")
     
-    # ============== AUTO UPDATE ==============
+    def run(self):
+        # Kiểm tra cập nhật sau khi UI đã sẵn sàng
+        self.root.after(1000, self._check_for_update)
+        self.root.mainloop()
     
-    def _check_for_updates(self):
-        """Kiểm tra cập nhật từ GitHub (chạy background, không block UI)"""
-        def on_update_available(update_info):
-            # Callback chạy trên background thread, cần schedule về main thread
-            self.root.after(0, lambda: self._show_update_dialog(update_info))
+    def _check_for_update(self):
+        """Kiểm tra cập nhật trong background"""
+        from src.config import CHECK_UPDATE_ON_START
+        if not CHECK_UPDATE_ON_START:
+            return
         
-        def on_error(error_msg):
-            # Không hiện lỗi cho user, chỉ log
-            print(f"[Update] Lỗi kiểm tra cập nhật: {error_msg}")
+        from src.services.update_service import UpdateService
         
-        self.update_service.check_for_updates(
-            on_update_available=on_update_available,
-            on_error=on_error
-        )
+        def on_check_complete(result):
+            if result.get("has_update") and not result.get("error"):
+                self.root.after(0, lambda: self._show_update_dialog(result))
+        
+        service = UpdateService()
+        service.check_update_async(on_check_complete)
     
     def _show_update_dialog(self, update_info):
         """Hiển thị dialog cập nhật"""
-        def on_update():
-            self._start_download(update_info)
-        
-        def on_skip():
-            self._update_dialog = None
-        
-        self._update_dialog = UpdateDialog(
-            self.root,
-            update_info,
-            on_update=on_update,
-            on_skip=on_skip
-        )
-        self._update_dialog.show()
-    
-    def _start_download(self, update_info):
-        """Bắt đầu tải bản cập nhật"""
-        def on_progress(percent):
-            # Schedule về main thread để update UI
-            self.root.after(0, lambda p=percent: self._update_download_progress(p))
-        
-        def on_complete(file_path):
-            # App sẽ tự đóng và restart
-            pass
-        
-        def on_error(error_msg):
-            self.root.after(0, lambda: self._on_download_error(error_msg))
-        
-        self.update_service.download_and_install(
-            update_info,
-            on_progress=on_progress,
-            on_complete=on_complete,
-            on_error=on_error
-        )
-    
-    def _update_download_progress(self, percent: int):
-        """Cập nhật progress bar (chạy trên main thread)"""
-        if self._update_dialog:
-            self._update_dialog.update_progress(percent)
-    
-    def _on_download_error(self, error_msg: str):
-        """Xử lý lỗi khi tải"""
-        if self._update_dialog:
-            self._update_dialog.close()
-            self._update_dialog = None
-        DialogManager.error("Lỗi cập nhật", f"Không thể tải bản cập nhật:\n{error_msg}")
-    
-    def run(self):
-        self.root.mainloop()
+        from src.ui.update_dialog import UpdateDialog
+        dialog = UpdateDialog(self.root, update_info)
+        dialog.show()

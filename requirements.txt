@@ -1,8 +1,25 @@
 # AutoClick Pro - Dependencies
+
+# GUI Framework
+# tkinter  # Included with Python - không cần cài qua pip
+
+# HTTP Requests (for auto-update)
+requests>=2.31.0
+
+# Mouse & Keyboard Automation
 pyautogui>=0.9.54
 keyboard>=0.13.5
+
+# Image Processing
 Pillow>=10.0.0
 opencv-python>=4.8.0
 numpy>=1.24.0
+
+# Windows API
 pywin32>=306
+
+# System Utilities
 psutil>=5.9.0
+
+# Build & Distribution (optional, for building exe)
+PyInstaller>=6.0.0
